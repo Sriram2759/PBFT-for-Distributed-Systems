@@ -1,0 +1,136 @@
+# This is an executable specification that simplifies the algorithm in
+# Castro, M., Liskov, B.: "Practical Byzantine Fault Tolerance".
+# In: Proceedings of OSDI 1999, New Orleans, LA (Feb. 1999)
+
+import sys
+import sys
+import time
+import random
+import hashlib
+import csv
+import os
+import psutil
+client_module = import_da('Client')
+replica_module = import_da('Replica')
+test_module = import_da('Test')
+controller_module = import_da('controller')
+
+# This is the driver process which spawns the requested number of clients and replicas. 
+# It also creates a test process and a controller process. 
+# It awaits done message from all the clients, replicas, and the test process.
+# This will create the CSV file for the performance metric collected from the controller process.
+
+config(channnel is fifo, clock is lamport)
+
+class Driver(process):
+
+	def setup(numReplica, numClients, numops, timeout, netwrkdelay, replicadelay, simulate_byzantine):
+		self.nreplicas = numReplica
+		self.nclients = numClients
+		self.nops = numops
+		self.tout = timeout
+		self.ndelay = netwrkdelay
+		self.rdelay = replicadelay
+		self.is_syystem_safe = ""
+		self.is_system_live = ""
+		self.totalreplicamsgs = 0
+		self.averageprocesstime = 0.0
+		self.wallclocktime = 0.0
+		self.view_changed_happened = ""
+		self.rss_memory_percent = 0
+		self.simulate_byzantine = simulate_byzantine
+		
+
+	def run():
+		test_agent = new(test_module.Test, num=1)
+		replicas = list(new(replica_module.Replica, num=nreplicas))
+		maxfaultnum = int((nreplicas-1)/3)
+
+		if (simulate_byzantine == 2):
+			byzantineset = list(random.sample(replicas, maxfaultnum))
+			if(replicas[0] in byzantineset):
+				byzantineset.remove(replicas[0]) #just in case primary replica gets added while 
+											     #selecting random replicas to be failed in above step
+		if (simulate_byzantine == 1):
+			byzantineset = []
+			if maxfaultnum > 0:
+				byzantineset = list(random.sample(replicas[1:], maxfaultnum-1))
+			byzantineset.append(replicas[0])
+			
+		if (simulate_byzantine == 0):
+			byzantineset = set()
+		output(byzantineset)
+		setup(test_agent,(nclients,nreplicas,byzantineset))
+		start(test_agent)
+		initial_state = []
+
+		ctl = new(controller_module.Controller, num= 1)
+		setup(ctl, (nreplicas + nclients,))
+		start(ctl)
+
+		setup(replicas, (ctl, replicas, initial_state, 0,byzantineset,maxfaultnum,ndelay,rdelay,tout,test_agent))
+		clients = new(client_module.Client, (ctl, replicas, nops, tout, 0,maxfaultnum,ndelay,test_agent), num= nclients)
+		start_etime = time.time()
+		start(replicas)
+		start_ctime = time.time()
+		start(clients)
+		
+		await(each(c in clients, has=received(('done',), from_=c)))
+		output('All clients done.')
+		end_ctime = time.time()
+		send(('done',), to= (replicas))
+		await(each(r in replicas, has=received(('done',), from_=r)))
+		output('All Replicas done.')
+		end_etime = time.time()
+		await(each(t in test_agent, has=received(('Test-done',), from_=t)))
+		output('Test Module Done')
+		#----------------------------------------------------------------------------------------
+		Throughput = (nclients*nops)/(end_ctime - start_ctime)
+		TotalRunTime = end_etime - start_etime
+		output("statistics",nclients,nreplicas,nops)
+		output("statistics",ndelay,rdelay,byzantineset)
+		output("statistics",Throughput,is_syystem_safe,is_system_live,end_etime - start_etime,totalreplicamsgs,view_changed_happened)
+		output("statistics",wallclocktime,averageprocesstime)
+		process = psutil.Process(os.getpid())
+		rss_memory_percent = process.memory_percent(memtype="rss")
+		print("statistics", rss_memory_percent)
+		output(self, parent())
+		row = [nreplicas,nclients,nops,ndelay,rdelay,
+			   len(byzantineset),(replicas[0] in byzantineset),view_changed_happened,Throughput,TotalRunTime,
+			   wallclocktime,averageprocesstime,is_syystem_safe,is_system_live,
+			   totalreplicamsgs,rss_memory_percent]
+		with open('Performance.csv', 'a') as csvFile:
+			writer = csv.writer(csvFile)
+			writer.writerow(row)
+			csvFile.close()
+		#----------------------------------------------------------------------------------------
+		send(('done',), to= parent())
+	
+	def receive(msg= ('Test-done',is_syystem_safe,is_system_live,totalmessagesinvolved,view_changed_happened)):
+		self.is_syystem_safe = is_syystem_safe
+		self.is_system_live = is_system_live
+		self.view_changed_happened = view_changed_happened
+		self.totalreplicamsgs = totalmessagesinvolved
+	
+	def receive(msg= ("Stats",avgproctime,walltime)):
+		self.averageprocesstime = float(avgproctime)
+		self.wallclocktime = float(walltime)
+		
+
+def main():
+	
+	nreplicas = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+	nclients = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+	nops = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+	timeout = int(sys.argv[4]) if len(sys.argv) > 4 else 10
+	netwrkdelay = float(sys.argv[5]) if len(sys.argv) > 5 else 0
+	replicadelay = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+	simulate_byzantine = int(sys.argv[7]) if len(sys.argv) > 7 else 2
+
+	
+	driver = new(Driver, [nreplicas, nclients, nops, timeout, netwrkdelay, replicadelay, simulate_byzantine])
+	start(driver)
+	await(received(('done',), from_=driver))
+	output('Terminating Driver')
+	
+	

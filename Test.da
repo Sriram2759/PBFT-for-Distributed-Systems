@@ -1,0 +1,66 @@
+# This is an executable specification that simplifies the algorithm in
+# Castro, M., Liskov, B.: "Practical Byzantine Fault Tolerance".
+# In: Proceedings of OSDI 1999, New Orleans, LA (Feb. 1999)
+
+import sys
+sys.setrecursionlimit(100000)
+import time
+import random
+import hashlib
+
+config(channnel is fifo, clock is lamport)
+
+# Listens for the messages from the Clients and Replicas to track the Liveness and Safety properties. 
+# Also, passes this information to the Driver process to collate all the information.
+
+
+class Test(process):
+
+	def setup(nclients,nreplicas,byzantineset):
+		self.view_changed_happened = "False"
+		self.allreplicainfo = []
+		self.totalmessagesinvolved =0
+		self.is_syystem_safe = ""
+		self.is_system_live = ""
+		
+	'''
+	To provide liveness, replicas must move to a new view if they are unable to execute a request.
+	'''
+	def receive(msg= ('Liveness',pv,nv,clientID)):
+		if ((nv-pv) >= 1):
+			self.view_changed_happened = "True"
+			self.is_system_live = "Yes"
+		output("ClientID, View Changed = , is_system_live = ",clientID, view_changed_happened, is_system_live)
+	
+	def receive(msg= ("ReplicaInfo",executedlist,messageloglen,pid)):
+		totalmessagesinvolved = totalmessagesinvolved + (messageloglen)
+		if(pid not in byzantineset):
+			allreplicainfo.append(executedlist)
+		output(allreplicainfo,"allreplicainfo")
+	
+	def liveness_check():
+		if await(len(setof(a, received(('Liveness',_,_,_), from_=a))) == nclients):
+			self.is_system_live = "Yes"
+	
+	"""
+	 The algorithm provides safety if all non-faulty replicas agree on the sequence numbers of requests that commit locally.
+	"""
+	def safety_check():
+		if await(len(setof(a, received(("ReplicaInfo",_,_,_), from_=a))) == nreplicas):
+			for i in range(1,len(allreplicainfo)):
+				output("i = ",i)
+				if(allreplicainfo[i] != allreplicainfo[i-1]):
+					output("The sytem is not safe")
+					self.is_syystem_safe = "No"
+					break
+			if(i == len(allreplicainfo) - 1):
+				output("the system is safe since all non faulty replicas followed same sequence")
+				output("total amount of messages sent = ",totalmessagesinvolved)
+				self.is_syystem_safe = "Yes"
+
+	def run():
+		liveness_check()
+		safety_check()
+		send(('Test-done',is_syystem_safe,is_system_live,totalmessagesinvolved,view_changed_happened), to=parent())
+		output('Test Module Terminating')
+		send(('Test-done',), to=parent())

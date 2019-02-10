@@ -1,0 +1,29 @@
+Simulator: Class responsible for setting up replicas and clients. Main purpose is simultaion of PBFT
+
+
+msgQue: Global variable of this class.
+
+	main():
+		setup replicas
+		setup clients
+		
+		make clients to send requests (may be randomly): Call sendRequest(time) method defined in the client class
+		
+		//Message processing
+		Check if msgQue is not empty:
+			If msg type is REPLY or ClientTimeout:
+				Client.msgProcess(msg) // Means ith client.
+			
+			else: 
+				Replica.msgProcess(msg)
+
+
+	def sendMsg(msg, tag):
+		add msg to msgQue
+		
+	def sendMsgToOthers(msg, id , tag):
+		for Replica ID = id:
+			sendMsg(msg, tag)
+		
+	
+	

@@ -1,0 +1,107 @@
+# This is an executable specification that simplifies the algorithm in
+# Castro, M., Liskov, B.: "Practical Byzantine Fault Tolerance".
+# In: Proceedings of OSDI 1999, New Orleans, LA (Feb. 1999)
+
+import sys
+sys.setrecursionlimit(100000)
+import time
+import random
+import hashlib
+
+config(channnel is fifo, clock is lamport)
+
+controller_module = import_da('controller')
+
+NOPS = 4  # number of different operations that the state machine can do
+
+
+class Client(process, controller_module.Controllee):
+
+	def setup(ctl, replicas:list, nops:int, timeout:int, current_view: int,maxfaultnum:int,ndelay:int,test_agent):
+		super().setup(ctl)
+		self.cid = 0           # command id
+		self.results = dict()  # map of command id to result of command
+		self.count = dict()    # map of command id to number of responses
+		self.timeout_value = 3*timeout	# since replicas will wait for timeout seconds to intiate view change. Making this value larger to avoid request bombarding.
+		self.current_view = current_view
+		self.clockValue = -1
+		self.resultlog = set()
+		self.netwrkdelay = ndelay
+		self.validresult = -999999999999999999999999
+		self.resultlog = set()
+		self.primaryreplica = replicas[current_view]
+		self.num_retries = 5
+		
+	def getMaxTorelentNumber():
+		return maxfaultnum
+	
+	'''A client C requests the execution of state machine operation O
+	by sending a <REQUEST,O,T,C> message to the primary. 
+	A client sends a request to what it believes is the current primary 
+	using a point-to-point message'''
+	'''
+	In this paper we assume that the client waits for one request to complete 
+	before sending the next one. But we can allow a client to make asynchronous requests,
+	yet preserve ordering constraints on them.
+	'''
+	'''If the client does not receive replies soon enough, 
+	it broadcasts the request to all replicas.'''
+	def sendrequest():
+		for i in range(nops):
+			self.resultlog.clear()
+			clockValue = logical_clock()
+			time.sleep(netwrkdelay)
+			opno = random.randint(1, NOPS)
+			arg1 = random.randint(1,10)
+			arg2 = random.randint(1,10)
+			cid += 1
+			output("sending my request to ",self.primaryreplica)
+			send(('REQUEST', (self, (opno,arg1,arg2), clockValue, cid)), to= self.primaryreplica)
+			itr = 0
+			while(itr<num_retries):
+				if await(cid in results):
+					output('The result received for request no ',i," is ", results[cid])
+					break
+				elif timeout(timeout_value):
+					output("I am client and brodcasting again",opno,arg1,arg2)
+					time.sleep(netwrkdelay)
+					send(('REQUEST', (self, (opno,arg1,arg2), clockValue, cid)), to= replicas)
+				itr +=1
+			if(itr == 3):
+				output ("Failed to perform operation")
+	
+	"""
+	A replica sends the reply to the request directly to the client. 
+	The reply has the form <REPLY, v, t, c, i, r> 
+	where v is the current view number,
+	t is the timestamp of the corresponding request,
+	i is the replica number, 
+	r and is the result of executing the requested operation.
+	"""
+	def receive(msg= ('REPLY', v, t, i, command_id, r)):
+		f = getMaxTorelentNumber()
+		resultlog.add(('REPLY', v, t, i, cid, str(r)))
+		'''
+		The client waits for f+1 replies with valid signatures from different replicas,
+		and with the same t and r, before accepting the result r. 
+		This ensures that the result is valid, since at most f replicas can be faulty.
+		'''
+		if (len(setof(a, received(('REPLY', _v, _clockValue, _, _cid, _r), from_=a))) >= f+1):
+			if cid not in results:
+				results[cid] = r
+				prev_view = self.current_view
+				self.current_view = v
+				new_view = self.current_view
+				send_liveness_result(prev_view,new_view)
+				key = self.current_view%len(replicas)
+				self.primaryreplica = self.replicas[key]
+
+		
+	def send_liveness_result(pv,nv):
+		send(('Liveness',pv,nv,self),to = test_agent)
+	
+	@controller_module.run
+	def run():
+		sendrequest()
+		output('Client Terminating')
+		send(('done',), to=parent())

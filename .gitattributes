@@ -1,0 +1,2 @@
+*.py diff=python
+*.da linguist-language=python

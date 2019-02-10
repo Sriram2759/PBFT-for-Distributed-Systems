@@ -1,0 +1,352 @@
+# This is an executable specification that simplifies the algorithm in
+# Castro, M., Liskov, B.: "Practical Byzantine Fault Tolerance".
+# In: Proceedings of OSDI 1999, New Orleans, LA (Feb. 1999)
+
+# We have excluded the checkpoint part of the paper for simplification.
+
+import sys
+sys.setrecursionlimit(100000)
+import time
+import random
+import hashlib
+import copy
+from collections import OrderedDict 
+
+controller_module = import_da('controller')
+
+config(channnel is fifo, clock is lamport)
+#-----------------------------------------------------------------------------------------------
+NOPS = 4  # number of different operations that the state machine can do
+def execute(input):
+	res = -9999
+	if(input[0] == 1):
+		#res = "Hello World"
+		res = input[1] + input[2]
+	elif(input[0] == 2):
+		#res = "Hello Universe";
+		res = input[1] - input[2]
+	elif(input[0] == 3):
+		#res = "Hello USA"
+		res = input[1]*input[2]
+	if(input[0]  == 4):
+		#res = "Hello India";
+		res = input[1]/input[2]
+	return res
+#---------------------------------------------------------------------------------------------------	
+class Replica(process, controller_module.Controllee):
+
+	def setup(ctl, replicas: set, initial_state:list, viewNumber: int, byzantineset:set, maxfaultnum:int, ndelay:int, rdelay:int, timeout:int,test_agent):
+		super().setup(ctl)
+		self.slot_num = 1
+		self.viewNumber = viewNumber
+		self.sequenceNumber = 0
+		self.messagelog= set()
+		self.prepared = set()
+		self.commited_local = set()
+		self.commited = set()
+		self.primaryreplica = replicas[0]
+		self.running = "True"
+		self.netwrkdelay = ndelay
+		self.replicadelay = rdelay
+		self.timeout_value = timeout
+		self.result = -898989898989
+		self.requestset = dict()
+		self.donelog = set()
+		self.otherreplicas = copy.deepcopy(list(replicas))
+		self.otherreplicas.remove(self)
+		self.executedlist =[0]
+		self.stage = ""
+		self.prep = 0
+		self.cantimeronn = "True"
+		self.prepreparelog = set()
+		
+	def getprimary():
+		key = self.viewNumber%len(replicas)
+		self.primaryreplica = self.replicas[key]
+	
+	def isprimary():
+		key = self.viewNumber%len(replicas)    
+		if(self.replicas[key] == self):
+			return True
+		else:
+			return False
+	
+	def isnewprimary(nv):
+		key = (nv)%len(replicas)    
+		if(self.replicas[key] == self):
+			return True
+		else:
+			return False
+
+	# Calculate message digest
+	def calculatedigest(data):
+		hashId = hashlib.md5()
+		hashId.update(repr(data).encode('utf-8'))
+		d = hashId.hexdigest()
+		return d
+	
+	def getMaxTorelentNumber():
+		n = len(replicas)
+		f = (n-1)/3
+		return f
+
+	def tuplefinder(type):
+		temp = set()
+		temp = [x for x in messagelog if x[0] == type]
+		return temp
+
+	
+	"""
+	Utility function to generate faulty messages to reporduce byzantine failure scenario.
+	It will return corrupted values for CorruptedMessage CorruptedResult CorruptedSeqNo CorruptedViewNo Corrupteddigest
+	These return values are used in different places by the byzantine replica.
+	"""
+	def configuredsend(MainMessage,destination):
+		CorruptedMessage = ("Corrupted message","KJSHSA","DSKHDSKHDS","S,KDHSKHDSIDH")
+		CorruptedResult = "djsgduihnsd838261389273"
+		CorruptedSeqNo = 9999
+		CorruptedViewNo = -9999
+		Corrupteddigest = "snjndjsdjd"
+		MainMessage = list(MainMessage)
+		if(self in byzantineset):
+			if((MainMessage[0] == "PREPARE")):
+				MainMessage[3] = CorruptedMessage
+				MainMessage[4] = calculatedigest(CorruptedMessage)
+			elif(MainMessage[0] == "REPLY"):
+				MainMessage[5] = CorruptedResult
+			elif(MainMessage[0] == "View-Change"):
+				MainMessage[1] = CorruptedSeqNo
+				MainMessage[2] = CorruptedViewNo
+			elif(MainMessage[0] == "COMMIT"):
+				MainMessage[3] = CorruptedMessage
+				MainMessage[5] = calculatedigest(CorruptedMessage)
+			elif(MainMessage[0] == "PREPREPARE"):
+				MainMessage[4] = Corrupteddigest
+				MainMessage[2] = CorruptedSeqNo
+			messagelog.add(tuple(MainMessage))
+			time.sleep(netwrkdelay)
+			send(tuple(MainMessage),to=destination)
+		else:
+			if(MainMessage[0] == "PREPREPARE"):
+				if(MainMessage[3] not in requestset):
+					prep+=1
+					MainMessage[2] = prep
+					requestset[MainMessage[3]] = prep
+				else:
+					MainMessage[2] = requestset[MainMessage[3]]
+			messagelog.add(tuple(MainMessage))
+			send(tuple(MainMessage),to=destination)
+#--------------------------------------------------------------------------------------------------------
+	"""When the primary, p, receives a client request, m,
+	it starts a three-phase protocol to atomically multicast the request to the replicas"""
+	"""
+	If the request has already been processed, the replicas simply re-send the reply; 
+	Replicas remember the last reply message they sent to each client. 
+	Otherwise, if the replica is not the primary, it relays the request to the primary.
+	If the primary does not multicast the request to the group, it will eventually
+	be suspected to be faulty by enough replicas to cause a view change.
+	"""
+	def receive(msg= ('REQUEST',m)):
+		"""
+		If the request has already been processed, the replicas simply re-send the reply; 
+		replicas remember the last reply message they sent to each client. 
+		Otherwise, if the replica is not the primary, it relays the request to the primary.
+		"""
+		replymsg = [tuple for tuple in self.messagelog if tuple[0] == "REPLY" and tuple[2] == m[2]]
+		if(len(replymsg) > 0):
+			send(replymsg[0],to=m[0])														# If already replied then reply back to Client directly
+		else:
+			"""
+			In the pre-prepare phase, the primary assigns a sequence number, n, to the request,
+			multicasts a pre-prepare message with m piggybacked to all the backups, 
+			and appends the message to its log.
+			"""
+			if(isprimary()):																# If self is Primary
+				data = ('REQUEST',m)
+				d = calculatedigest(data)
+				time.sleep(0.002)
+				configuredsend(('PREPREPARE', viewNumber, self.sequenceNumber, m, d),otherreplicas)	# Multicasts PREPREPARE to all Backups
+			else:
+				send(('REQUEST',m) , to = self.primaryreplica)								# Backup Relays request to Primary
+					
+				"""
+				For View-Change Protocol: A backup is waiting for a request if it received a valid request and has not executed it. 
+				A backup starts a timer when it receives a request and the timer is not already running.
+				It stops the timer when it is no longer waiting to execute the request, 
+				but restarts it if at that point it is waiting to execute some other request.
+				If the timer of backup expires in view , the backup starts a view change to move the system to view v+1. 
+				It stops accepting messages (other than checkpoint, view-change, and new-view messages) and multicasts a VIEW-CHANGE message to all replicas. 
+				"""
+				if(self.stage != "inbackupphase"):
+					self.stage ="inbackupphase"
+					initiatebackuptimer(m)
+	
+#---------------------------------------------------------------------------------------------------
+	def initiatebackuptimer(m):
+		output("in backup")
+		if await(m in prepreparelog):
+			pass
+		elif(received(('done',), from_=parent())):
+			pass
+		elif(timeout(timeout_value)):
+			"""
+			It stops accepting messages (other than checkpoint, view-change, and new-view messages) and multicasts a 
+			<VIEW-CHANGE, v+1, n, C, P, i> message to all replicas. Here n is the sequence number of the last stable checkpoint s known to i,
+			C is a set of 2f+1 valid checkpoint messages providing the correctness of s, and P is a set containing a set Pm for
+			each request m that prepared at i with a sequence number higher than n.
+			"""
+			k = viewNumber + 1
+			output("initiating view change",k)
+			
+			configuredsend(("View-Change",k,m),replicas)
+#-----------------------------------------------------------------------------------------
+	"""
+	When the primary p of view v+1 receives 2f+1 valid view-change messages for view  v+1 from other replicas,
+	it multicasts a <NEW-VIEW, v+1, V,O) message to all other replicas,
+	where V is a set containing the valid view- change messages received by the primary plus 
+	the view- change message for v+1 the primary sent (or would have sent), 
+	and O is a set of pre-prepare messages (without the piggybacked request). O is computed as follows:
+	1. The primary determines the sequence number min-s of the latest stable checkpoint in V and the highest
+	sequence number max-s in a prepare message in V.
+	2. The primary creates a new pre-prepare message for view v+1 for each sequence number n between min-s and max-s.
+	There are two cases: 
+	(1) there is at least one set in the P component of some view-change message in V with sequence number n, or
+	(2) there is no such set. In the first case, the primary creates a new message <PRE-PREPARE, v+1, n, d),
+	where d is the request digest in the pre-prepare message for sequence number n with the highest view number in V.
+	In the second case, it creates a new pre- prepare message <PRE-PREPARE, v+1, n, d), 
+	where d is the digest of a special null request; a null request goes through the protocol like other requests, 
+	but its execution is a no-op.
+	"""
+	def receive(msg = ('View-Change',nv,m)):
+		f = getMaxTorelentNumber()
+		if(isnewprimary(nv) and ("viewchanged") not in messagelog):
+			output("nv")
+			f = getMaxTorelentNumber()
+			if (len(setof(a, received(('View-Change', _nv,m), from_=a))) >= (2*f) or f == 0):
+				send(("New-View",nv,self),to = replicas)
+				self.messagelog.add("View-Change")
+				await(len(setof(a, received(('viewchanged'), from_=a))) == 3*f+1 or f == 0)
+				output("view change done")
+				data = ('REQUEST',m)
+				d = calculatedigest(data)
+				configuredsend(('PREPREPARE', viewNumber, self.sequenceNumber, m, d),otherreplicas)	# Multicasts PREPREPARE to all Backups
+#-----------------------------------------------------------------------------------------------------	
+	"""
+	A backup accepts a new-view message for view v+1
+	if it is signed properly, if the view-change messages it contains are valid for view 1, and if the set Theta is correct;
+	Then it adds the new information to its log as described for the primary, multicasts a prepare for each 
+	message in Theta to all the other replicas, adds these prepares to its log, and enters view v+1.
+	"""
+	def receive(msg = ('New-View',v,np)):
+		self.primaryreplica = np
+		self.viewNumber = v
+		self.stage = "Normal"
+		self.messagelog.add(("viewchanged"))
+		send(("viewchanged"),to = np)
+#-------------------------------------------------------------------------------------------------------
+	"""
+	A backup accepts a pre-prepare message provided:
+	1. the signatures in the request and the pre-prepare message are correct and is the digest for ;
+	2. it is in view ;
+	3. it has not accepted a pre-prepare message for view and sequence number containing a different digest;
+	4. the sequence number in the pre-prepare message is between a low water mark, , and a high water mark,
+	
+	If backup accepts the PRE-PREPARE message, 
+	it enters the prepare phase by multicasting a PREPARE message to all other replicas 
+	and adds both messages to its log. Otherwise, it does nothing.
+	The message has the form <<PRE-PREPARE,v,n,d>,m>, where v indicates the view in which the message is being sent, 
+	m is the client’s request message, and d is m’s digest.
+	"""
+	def receive(msg= ('PREPREPARE', v, n, m,d)):
+		data = ('REQUEST',m)
+		if(self.viewNumber == v and str(d) == str(calculatedigest(data))):					# Points 1 and 2 mentioned above
+			self.prepreparelog.add(m)
+			messagelog.add(('PREPREPARE', v, n, m,d))										# Adds both messages to its log
+			messagelog.add(('PREPARE', v, n, m, self,d))
+			"""
+			As per paper , this message must be sent to all other replicas, but code wise it was not working
+			So had to send this message to all the replicas
+			"""
+			configuredsend(('PREPARE', v, n, m, self,d),replicas)								# Multicast a PREPARE message to all other replicas
+#------------------------------------------------------------------------------------------------------------				
+	"""
+	A replica (including the primary) accepts prepare messages and adds them to its log provided 
+	their signatures are correct, 
+	their view number equals the replica’s current view, 
+	and their sequence number is between and h and H.
+	"""
+	def receive(msg= ('PREPARE', v, n, m, i,d)):												# Received by all Replicas(including Primary)
+		data = ('REQUEST',m)
+		if(self.viewNumber == v and str(d) == str(calculatedigest(data))):   
+			messagelog.add(('PREPARE', v, n, m, i,d))				# Add PREPARE messgae to its own messagelog
+			"""
+			We define the predicate prepared to be true if and only if replica has inserted in its log: 
+			the request, 
+			a PRE-PREPARE for in view with sequence number, 
+			and 2f PREPARE from different backups that match the PRE-PREPARE. 
+			The replicas verify whether the PREPARE match the PRE-PREPARE by checking that
+			they have the same view, sequence number, and digest.
+			"""
+			if (('PREPREPARE', v, n, m,d) in messagelog and (m,n,v,self,d) not in prepared):
+				f = getMaxTorelentNumber()
+				if(len(setof(a, received(('PREPARE',_v,_n,_m,_,_d), from_=a))) >= (2*f)):
+					prepared.add((m,n,v,self,d))
+					"""
+					Replica multicasts a COMMIT message to the other replicas when prepared becomes true.
+					This starts the commit phase.
+					"""
+					configuredsend(('COMMIT', v, n, m, self,d),replicas)
+	
+	
+	"""
+	Replicas accept COMMIT messages and insert them in their log provided they are
+	properly signed, 
+	the view number in the message is equal to the replica’s current view, 
+	and the sequence number is between and h and H
+	"""
+	def receive(msg= ('COMMIT', v, n, m, i,d)):
+		data = ('REQUEST',m)
+		if(self.viewNumber == v and str(d) == str(calculatedigest(data))):
+			cnt =0
+			f = getMaxTorelentNumber()
+			messagelog.add(('COMMIT', v, n, m, i,d))			# Add COMMIT message to its own messagelog
+			"""
+			We define the committed and committed-local predicates as follows: 
+			committed is true if and only if prepared is true for all in some set of f+1 non-faulty replicas; 
+			and committed-local is true if and only if prepared is true and has accepted 2f+1 COMMIT(possibly including its own)
+			from different replicas that match the PRE-PREPARE for m;
+			a COMMIT matches a PRE-PREPARE if they have the same view, sequence number, and digest.
+			"""
+			f = getMaxTorelentNumber()
+			if((m, n, v, self,d) in prepared and (m,v,n,self) not in commited_local):
+				if (len(setof(a, received(('COMMIT', _v, _n, _m, _,_d), from_=a))) >= (2*f + 1)):
+					messagelog.add(('COMMIT', v, n, m, i,d))
+					commited_local.add((m,v,n,self))
+					"""
+					Each replica executes the operation requested by after committed-local is true and replica’s state
+					reflects the sequential execution of all requests with lower sequence numbers.
+					After executing the requested operation, replicas send a reply to the client.
+					Replicas discard requests whose timestamp is lower than
+					the timestamp in the last reply they sent to the client to
+					guarantee exactly-once semantics.
+					"""
+					# All requests are executed sequentially.
+					sortedcommited = copy.deepcopy(list(commited_local))
+					sortedcommited.sort(key=lambda tup: tup[2])
+					for i in range(0,len(sortedcommited)):
+						m2,v2,n2,s2 = sortedcommited[i]
+						if(n2 in executedlist):
+							continue
+						if(n2 != max(executedlist) + 1):
+							break
+						client, op, t, cid = m2
+						result = execute(op)
+						configuredsend(('REPLY', v2, t, self, cid, result),client)
+						executedlist.append(n2)
+#--------------------------------------------------------------------------------------------------------	
+	@controller_module.run
+	def run():
+		await(received(('done',), from_=parent()))
+		output(executedlist)
+		send(("ReplicaInfo",executedlist,len(messagelog),self),to = test_agent)
+		send(('done',), to= parent())
