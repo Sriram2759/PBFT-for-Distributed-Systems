@@ -11,3 +11,4 @@ As described in paper each round of pBFT consensus (called views) comes down to 
 2. The leader node multicasts the request to the backup nodes.
 3. The nodes execute the request and then send a reply to the client.
 4. The client awaits f + 1 (f represents the maximum number of nodes that may be faulty) replies from different nodes with the same result. This result is the result of the operation.
+P.S: To tolerate "f" byzantine failures,the system must encompass minimum 3*f + 1 replicas(servers)
